@@ -7,6 +7,7 @@ import yt_dlp
 import json
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
+import time
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -339,5 +340,11 @@ def load_credentials():
     with open('creds.json') as f:
         return json.load(f)
 
-credentials = load_credentials()
-bot.run(credentials['token'])
+if __name__ == "__main__":
+    credentials = load_credentials()
+    while True:
+        try:
+            asyncio.run(bot.start(credentials['token']))
+        except Exception as e:
+            print(f"Lost connection: {e}. Retrying in 60 seconds...")
+            time.sleep(60)
