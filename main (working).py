@@ -22,7 +22,6 @@ class Music(commands.Cog):
         self.voice_client = None
         self.last_search_user = None
         self.sent_messages = []
-        self.playlist_tasks = []
         self.thread_pool = ThreadPoolExecutor(max_workers=3)
         if not os.path.exists('./downloads'):
             os.makedirs('./downloads')
@@ -65,8 +64,6 @@ class Music(commands.Cog):
 
         if 'youtube.com/watch?v=' in query or 'youtu.be/' in query:
             await self.add_to_queue(ctx, query)
-        elif '/playlist?' in query:
-            await self.download_playlist(ctx,query)
         else:
             results = await self.search_videos(query)
             if not results:
@@ -74,22 +71,10 @@ class Music(commands.Cog):
                 return
             await self.send_search_results(ctx, results)
 
-    async def cancel_playlist_tasks(self):
-        for task in self.playlist_tasks:
-            if not task.done() and not task.cancelled():
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
-        self.playlist_tasks.clear()
-
     @commands.command()
     async def stop(self, ctx):
         if self.voice_client and self.voice_client.is_playing():
             self.voice_client.stop()
-            await self.cancel_playlist_tasks()
-            self.queue.clear()
             await self.send_message(ctx, "Playback stopped.")
         else:
             await self.send_message(ctx, "Nothing is currently playing.")
@@ -178,7 +163,7 @@ class Music(commands.Cog):
         try:
             song_info = await self.download_audio(url)
             if not song_info:
-                await status_msg.edit(content=f"❌ Failed to download {title}. Please try again.")
+                await status_msg.edit(content="❌ Failed to download the audio. Please try again.")
                 return
 
             self.queue.append(song_info)
@@ -188,40 +173,10 @@ class Music(commands.Cog):
 
             if not self.voice_client.is_playing():
                 await self.play_next(ctx)
-            return
 
         except Exception as e:
             await status_msg.edit(
                 content=f"❌ Error adding song to queue: {str(e)}"
-            )
-            print(f"Error in add_to_queue: {str(e)}")
-    
-    async def handle_playlist(self,ctx,urls):
-        for url in urls:
-            await self.add_to_queue(ctx,url)
-
-    async def download_playlist(self, ctx, url, title=None):
-
-        status_msg = await self.send_message(
-            ctx, 
-            f"⏳ Adding playlist to queue..."
-        )
-
-        try:
-            ydl_opts = {
-                'extract_flat': True,  # Don't download, just extract metadata
-                'quiet': True
-            }
-            
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
-                playlist_urls = [entry['url'] for entry in info['entries']]
-                playlist_task = asyncio.create_task(self.handle_playlist(ctx,playlist_urls))
-                self.playlist_tasks.append(playlist_task)
-
-        except Exception as e:
-            await status_msg.edit(
-                content=f"❌ Error adding playlist to queue: {str(e)}"
             )
             print(f"Error in add_to_queue: {str(e)}")
 
@@ -255,86 +210,45 @@ class Music(commands.Cog):
             print(f"Error in download: {d.get('error', 'Unknown error')}")
 
     def download_audio_sync(self, url, output_path='./downloads'):
-        if('/playlist?' in url):
-            ydl_opts = {
-                'format': 'bestaudio[ext=m4a]/bestaudio/best',  # Prefer m4a but fallback to any audio
-                'postprocessors': [],  # No conversion needed
-                'outtmpl': os.path.join(output_path, '%(title)s-%(id)s.%(ext)s'),
-                'restrictfilenames': True,
-                'noplaylist': False,
-                'nocheckcertificate': True,
-                'ignoreerrors': False,
-                'logtostderr': False,
-                'quiet': False,
-                'no_warnings': False,
-                'progress_hooks': [self.download_progress_hook]
-            }
+        ydl_opts = {
+            'format': 'bestaudio[ext=m4a]/bestaudio/best',  # Prefer m4a but fallback to any audio
+            'postprocessors': [],  # No conversion needed
+            'outtmpl': os.path.join(output_path, '%(title)s-%(id)s.%(ext)s'),
+            'restrictfilenames': True,
+            'noplaylist': True,
+            'nocheckcertificate': True,
+            'ignoreerrors': False,
+            'logtostderr': False,
+            'quiet': False,
+            'no_warnings': False,
+            'progress_hooks': [self.download_progress_hook]
+        }
 
-            try:
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    print(f"Starting download process for: {url}")
-                    info = ydl.extract_info(url, download=True)
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                print(f"Starting download process for: {url}")
+                info = ydl.extract_info(url, download=True)
+                
+                if not info:
+                    print("Failed to extract video information")
+                    return None
+                
+                # Get the filename with original extension
+                filename = ydl.prepare_filename(info)
+                
+                if not os.path.exists(filename):
+                    print(f"File not found: {filename}")
+                    return None
                     
-                    if not info:
-                        print("Failed to extract video information")
-                        return None
-                    
-                    # Get the filename with original extension
-                    filename = ydl.prepare_filename(info)
-
-                    if not os.path.exists(filename):
-                        print(f"File not found: {filename}")
-                        return None
-                    
-                    print(f"Download complete: {filename}")
-                    return {
-                        'title': info['title'],
-                        'filename': filename,
-                        'duration': info.get('duration', 0)
-                    }
-            except Exception as e:
-                print(f"Download error: {str(e)}")
-                return None
-        else:
-            ydl_opts = {
-                'format': 'bestaudio[ext=m4a]/bestaudio/best',  # Prefer m4a but fallback to any audio
-                'postprocessors': [],  # No conversion needed
-                'outtmpl': os.path.join(output_path, '%(title)s-%(id)s.%(ext)s'),
-                'restrictfilenames': True,
-                'noplaylist': True,
-                'nocheckcertificate': True,
-                'ignoreerrors': False,
-                'logtostderr': False,
-                'quiet': False,
-                'no_warnings': False,
-                'progress_hooks': [self.download_progress_hook]
-            }
-
-            try:
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    print(f"Starting download process for: {url}")
-                    info = ydl.extract_info(url, download=True)
-                    
-                    if not info:
-                        print("Failed to extract video information")
-                        return None
-                    
-                    # Get the filename with original extension
-                    filename = ydl.prepare_filename(info)
-
-                    if not os.path.exists(filename):
-                        print(f"File not found: {filename}")
-                        return None
-                    
-                    print(f"Download complete: {filename}")
-                    return {
-                        'title': info['title'],
-                        'filename': filename,
-                        'duration': info.get('duration', 0)
-                    }
-            except Exception as e:
-                print(f"Download error: {str(e)}")
-                return None
+                print(f"Download complete: {filename}")
+                return {
+                    'title': info['title'],
+                    'filename': filename,
+                    'duration': info.get('duration', 0)
+                }
+        except Exception as e:
+            print(f"Download error: {str(e)}")
+            return None
 
     async def download_audio(self, url):
         loop = asyncio.get_event_loop()
