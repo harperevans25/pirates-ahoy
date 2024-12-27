@@ -8,6 +8,7 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 import time
+import wave
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -23,9 +24,23 @@ class Music(commands.Cog):
         self.last_search_user = None
         self.sent_messages = []
         self.playlist_tasks = []
+        self.check_empty_interval = 5 #seconds
+        self.empty_channel_task = None
         self.thread_pool = ThreadPoolExecutor(max_workers=3)
         if not os.path.exists('./downloads'):
             os.makedirs('./downloads')
+
+    async def check_empty_channel(self):
+        while self.voice_client and self.voice_client.is_connected():
+            channel_members = [m for m in self.voice_client.channel.members if not m.bot]
+            if not channel_members:
+                await self.voice_client.disconnect()
+                self.voice_client = None
+                self.queue.clear()
+                if self.current_song and os.path.exists(self.current_song['filename']):
+                    os.remove(self.current_song['filename'])
+                break
+            await asyncio.sleep(self.check_empty_interval)
 
     async def send_message(self, ctx, content, **kwargs):
         message = await ctx.send(content, **kwargs, silent=True)
@@ -55,6 +70,14 @@ class Music(commands.Cog):
         try:
             if not self.voice_client or not self.voice_client.is_connected():
                 self.voice_client = await ctx.author.voice.channel.connect()
+                connect_sound = discord.FFmpegPCMAudio('bluetooth_pairing.wav')
+                self.voice_client.play(connect_sound)
+                with wave.open('bluetooth_pairing.wav', 'rb') as audio:
+                    frames = audio.getnframes()
+                    rate = audio.getframerate()
+                    duration = frames / float(rate)
+                    await asyncio.sleep(duration)
+                self.empty_channel_task = asyncio.create_task(self.check_empty_channel())
         except discord.errors.ClientException:
             if self.voice_client and self.voice_client.guild != ctx.guild:
                 await self.send_message(ctx, "I'm already being used in another server.")
